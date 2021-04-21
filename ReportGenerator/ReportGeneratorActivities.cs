@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using Docati.Api;
@@ -17,8 +18,9 @@ namespace ReportGenerator
     {
         private readonly ReportGeneratorConfig _reportGenConfig;
         private readonly DocBuilder _docBuilder;
+        private readonly HttpClient _httpClient;
 
-        public ReportGeneratorActivities(ReportGeneratorConfig reportGenConfig, DocBuilder docBuilder)
+        public ReportGeneratorActivities(ReportGeneratorConfig reportGenConfig, DocBuilder docBuilder, HttpClient httpClient)
         {
             this._reportGenConfig = reportGenConfig ?? throw new ArgumentNullException(nameof(reportGenConfig));
 
@@ -28,6 +30,7 @@ namespace ReportGenerator
             this._reportGenConfig.OutputFolder = outputFolder;
 
             this._docBuilder = docBuilder ?? throw new ArgumentNullException(nameof(docBuilder));
+            this._httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         }
 
         [FunctionName(nameof(ImportDataFile))]
@@ -37,14 +40,25 @@ namespace ReportGenerator
         {
             log.LogInformation($"Importing {dataFile}");
 
-            // simulate doing the activity
-            await Task.Delay(1000);
+            string fileData = await LoadFile(dataFile);
 
-            return new Student[]
+            var students = JsonConvert.DeserializeObject<IEnumerable<Student>>(fileData);
+            return students;            
+        }
+
+        private async Task<string> LoadFile(string dataFile)
+        {
+            if (dataFile.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             {
-                new Student { Id = "A12876771", Name = "Robert", Score = 5.5m },
-                new Student { Id = "F12177894", Name = "Richard", Score = 5.49m },
-            };
+                var resp = await _httpClient.GetAsync(dataFile);
+                resp.EnsureSuccessStatusCode();
+                return await resp.Content.ReadAsStringAsync();
+            }
+            else
+            {
+                if (dataFile.Contains("..")) throw new InvalidOperationException("Path traversal not allowed");
+                return File.ReadAllText(dataFile);
+            }
         }
 
         [FunctionName(nameof(GenerateReport))]

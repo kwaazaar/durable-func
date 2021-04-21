@@ -29,6 +29,8 @@ namespace ReportGenerator
                 var builder = new DocBuilder(reportGenConfig?.Template ?? "Template.docx", resourceProvider);
                 return builder;
             });
+
+            builder.Services.AddHttpClient<ReportGeneratorActivities>();
         }
     }
 }
