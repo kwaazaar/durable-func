@@ -1,8 +1,5 @@
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
-using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
@@ -13,15 +10,21 @@ namespace ReportGenerator
 {
     public static class ReportGeneratorOrchestrators
     {
-        [FunctionName(nameof(ProcessDataFile))]
-        public static async Task<object> ProcessDataFile(
+        /// <summary>
+        /// Generates and archives test reports (PDF) for all students
+        /// </summary>
+        /// <remarks>May take a lot of time for many students (and since Docati.Api unlicensed (free) has time penalty) </remarks>
+        /// <param name="ctx"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(GenerateAndArchiveReports))]
+        public static async Task<object> GenerateAndArchiveReports(
             [OrchestrationTrigger] IDurableOrchestrationContext ctx,
             ILogger log)
         {
             log = ctx.CreateReplaySafeLogger(log);
-            var dataFile = ctx.GetInput<string>();
 
-            var students = await ctx.CallActivityAsync<IEnumerable<Student>>(nameof(ReportGeneratorActivities.ImportDataFile), dataFile);
+            var students = ctx.GetInput<IEnumerable<Student>>();
 
             var start = ctx.CurrentUtcDateTime;
 
@@ -46,12 +49,18 @@ namespace ReportGenerator
 
                 return new
                 {
-                    Error = "Failed to process datafile: " + e.Message,
+                    Error = "Failed to process list of students: " + e.Message,
                     Duration = (end - start).TotalSeconds,
                 };
             }
         }
 
+        /// <summary>
+        /// Generates and archives test reports (PDF) for a single student
+        /// </summary>
+        /// <param name="ctx"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
         [FunctionName(nameof(GenerateAndArchiveReport))]
         public static async Task<object> GenerateAndArchiveReport(
             [OrchestrationTrigger] IDurableOrchestrationContext ctx,
@@ -84,31 +93,6 @@ namespace ReportGenerator
                     Error = $"Failed to generate and archive report for student {student.Name}: " + e.Message,
                 };
             }
-        }
-
-
-        [FunctionName(nameof(HttpStart))]
-        public static async Task<IActionResult> HttpStart(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req,
-            [DurableClient] IDurableOrchestrationClient starter,
-            ILogger log)
-        {
-            // parse query parameter
-            string dataFile = req.GetQueryParameterDictionary()["data"];
-
-            if (dataFile == null)
-            {
-                return new BadRequestObjectResult(
-                   "Please pass the datafile location on the query string");
-            }
-
-            log.LogInformation($"About to start orchestration for {dataFile}");
-
-            var orchestrationId = await starter.StartNewAsync(nameof(ProcessDataFile), null, dataFile);
-
-            var payload = starter.CreateHttpManagementPayload(orchestrationId);
-
-            return new OkObjectResult(payload);
         }
     }
 }
