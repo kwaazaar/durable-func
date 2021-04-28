@@ -14,6 +14,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Text;
@@ -27,12 +28,15 @@ namespace ReportGenerator
         private readonly ReportGeneratorConfig _reportGenConfig;
         private readonly DocBuilder _docBuilder;
         private readonly HttpClient _httpClient;
+        private readonly string _reportStoreConnString;
 
         public ReportGeneratorActivities(IOptions<ReportGeneratorConfig> reportGenConfig, DocBuilder docBuilder, HttpClient httpClient)
         {
             this._reportGenConfig = reportGenConfig.Value ?? throw new ArgumentNullException(nameof(reportGenConfig));
             this._docBuilder = docBuilder ?? throw new ArgumentNullException(nameof(docBuilder));
             this._httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+
+            _reportStoreConnString = Environment.GetEnvironmentVariable("ReportStore");
         }
 
         /// <summary>
@@ -171,6 +175,34 @@ namespace ReportGenerator
         }
 
         /// <summary>
+        /// Function that generates and archives test reports (PDF) for all students.
+        /// </summary>
+        /// <remarks>This single activity/function prevents storing the PDF-contents as activity output in storage (Durable Functions).</remarks>
+        /// <param name="student"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(GenerateAndArchiveReport))]
+        public async Task GenerateAndArchiveReport(
+            [ActivityTrigger] Student student,
+            ILogger log)
+        {
+            log.LogInformation("Processing student {student}", student.Name);
+
+            // Generate the report
+            var reportData = await GenerateReport(student, log);
+
+            // Archive the report
+            _ = await ArchiveReport(new ArchiveReportCommand
+            {
+                Base64Data = reportData,
+                Filename = student.Id + ".pdf",
+                Mimetype = "application/pdf",
+            }, new BlobContainerClient(_reportStoreConnString, "output"), log);
+
+            log.LogInformation("Done processing student {student}", student.Name);
+        }
+
+        /// <summary>
         /// Generate the report PDF using Docati.Api
         /// </summary>
         /// <param name="student"></param>
@@ -178,18 +210,32 @@ namespace ReportGenerator
         /// <returns></returns>
         [FunctionName(nameof(GenerateReport))]
         public Task<string> GenerateReport(
-            [ActivityTrigger] Student student,
-            ILogger log)
+        [ActivityTrigger] Student student,
+        ILogger log)
         {
             log.LogInformation($"Generating report for: {student.Name}");
+            var sw = Stopwatch.StartNew();
 
-            var studentAsString = JsonConvert.SerializeObject(student);
-            using var dataStream = new MemoryStream(Encoding.UTF8.GetBytes(studentAsString));
+            try
+            {
 
-            using var outputStream = new MemoryStream();
-            _docBuilder.Build(dataStream, DataFormat.Json, outputStream, null, DocumentFileFormat.PDF);
+                var studentAsString = JsonConvert.SerializeObject(student);
+                using var dataStream = new MemoryStream(Encoding.UTF8.GetBytes(studentAsString));
 
-            return Task.FromResult(Convert.ToBase64String(outputStream.ToArray()));
+                using var outputStream = new MemoryStream(60000); // Initial capacity to prevent many allocations
+                _docBuilder.Build(dataStream, DataFormat.Json, outputStream, null, DocumentFileFormat.PDF);
+                var result = Convert.ToBase64String(outputStream.ToArray());
+
+                sw.Stop();
+                log.LogInformation($"Report generated for {student.Name} in {sw.ElapsedMilliseconds} ms");
+
+                return Task.FromResult(result);
+            }
+            catch (Exception e)
+            {
+                log.LogError(e, "Failed to generate report");
+                throw;
+            }
         }
 
         /// <summary>
@@ -201,19 +247,23 @@ namespace ReportGenerator
         /// <returns></returns>
         [FunctionName(nameof(ArchiveReport))]
         public async Task<string> ArchiveReport(
-            [ActivityTrigger] ArchiveReportCommand command,
-            [Blob("output", FileAccess.Read)] BlobContainerClient blobContainerClient,
-            ILogger log)
+                    [ActivityTrigger] ArchiveReportCommand command,
+                    [Blob("output", FileAccess.Read)] BlobContainerClient blobContainerClient,
+                    ILogger log)
         {
             log.LogInformation($"Archive report for: {command.Filename}");
+            var sw = Stopwatch.StartNew();
 
             try
             {
                 await blobContainerClient.CreateIfNotExistsAsync();
                 var blobClient = blobContainerClient.GetBlobClient(command.Filename);
-                var blobDataStream = new MemoryStream(Convert.FromBase64String(command.Base64Data));
+                using var blobDataStream = new MemoryStream(Convert.FromBase64String(command.Base64Data));
                 var blobInfo = await blobClient.UploadAsync(blobDataStream, overwrite: true);
                 await blobClient.SetHttpHeadersAsync(new BlobHttpHeaders { ContentType = command.Mimetype });
+
+                sw.Stop();
+                log.LogInformation($"Report archived for {command.Filename} in {sw.ElapsedMilliseconds} ms");
 
                 return blobInfo.Value.VersionId;
             }

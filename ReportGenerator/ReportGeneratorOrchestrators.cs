@@ -11,7 +11,7 @@ namespace ReportGenerator
     public static class ReportGeneratorOrchestrators
     {
         /// <summary>
-        /// Generates and archives test reports (PDF) for all students
+        /// Orchestration that generates and archives test reports (PDF) for all students
         /// </summary>
         /// <remarks>May take a lot of time for many students (and since Docati.Api unlicensed (free) has time penalty) </remarks>
         /// <param name="ctx"></param>
@@ -30,10 +30,12 @@ namespace ReportGenerator
 
             try
             {
-                var studentTasks = students
-                    .Select(s => ctx.CallSubOrchestratorAsync<object>(nameof(GenerateAndArchiveReport), s));
+                // The orchestration does the generate and archive as two separate activity calls
+                // The activity/function does the generate and archiving at once
+                // NB: maxConcurrency=200 uses up to 1.2Gb locally (while debugging)
 
-                await Task.WhenAll(studentTasks);
+                await students.ParallelForEachAsync(50, s => ctx.CallSubOrchestratorAsync<object>(nameof(ReportGeneratorOrchestrators.GenerateAndArchiveReportOrch), s));
+                //await students.ParallelForEachAsync(50, s => ctx.CallActivityAsync(nameof(ReportGeneratorActivities.GenerateAndArchiveReport), s));
 
                 var end = ctx.CurrentUtcDateTime;
 
@@ -61,8 +63,8 @@ namespace ReportGenerator
         /// <param name="ctx"></param>
         /// <param name="log"></param>
         /// <returns></returns>
-        [FunctionName(nameof(GenerateAndArchiveReport))]
-        public static async Task<object> GenerateAndArchiveReport(
+        [FunctionName(nameof(GenerateAndArchiveReportOrch))]
+        public static async Task GenerateAndArchiveReportOrch(
             [OrchestrationTrigger] IDurableOrchestrationContext ctx,
             ILogger log)
         {
@@ -78,20 +80,16 @@ namespace ReportGenerator
                 var result = await ctx.CallActivityAsync<string>(nameof(ReportGeneratorActivities.ArchiveReport), new ArchiveReportCommand
                 {
                     Base64Data = reportData,
-                    Filename = student.Name + ".pdf",
+                    Filename = student.Id + ".pdf",
                     Mimetype = "application/pdf",
                 });
 
                 log.LogInformation("Done processing student {student}", student.Name);
-
-                return new { }; // We need this on success?
             }
             catch (Exception e)
             {
-                return new
-                {
-                    Error = $"Failed to generate and archive report for student {student.Name}: " + e.Message,
-                };
+                log.LogError(e, "Failed to process student");
+                throw;
             }
         }
     }

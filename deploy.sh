@@ -53,6 +53,10 @@ az functionapp create \
 az functionapp config appsettings set -n $FUNCTION_APP_NAME -g $RESOURCE_GROUP \
   --settings "AzureWebJobsStorage=$STORAGE_ACCOUNT_CONNSTRING" "ReportStore=$STORAGE_ACCOUNT_CONNSTRING"
 
+# Optional: set Docati-license (current one is valid until may 31st 2021)
+az functionapp config appsettings set -n $FUNCTION_APP_NAME -g $RESOURCE_GROUP \
+  --settings "DocatiLicense=<DocatiLicense xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\"><Version>5</Version><Company>Docati Internal</Company><NativeFormatOnly>false</NativeFormatOnly><SingleLocation>true</SingleLocation><ImportTemplateSupported>true</ImportTemplateSupported><Trial>false</Trial><ValidFrom>2021-04-28T00:00:00</ValidFrom><ValidUntil>2021-05-31T00:00:00</ValidUntil><LicenseCreated>2021-04-28T00:00:00</LicenseCreated><Key>ngq/mm8efny3fj/eyhbwsdl7ylayqadz</Key></DocatiLicense>"
+
 # step 9 - publish the application code
 pushd ReportGenerator/
 func azure functionapp publish $FUNCTION_APP_NAME
