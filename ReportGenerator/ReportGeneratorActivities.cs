@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -40,47 +41,66 @@ namespace ReportGenerator
         }
 
         /// <summary>
-        /// Http-trigger to pass path to file on url (webbased file or local file)
+        /// Http-trigger generate and archive reports for data passed in the request body
         /// </summary>
         /// <param name="req"></param>
         /// <param name="client"></param>
         /// <param name="log"></param>
         /// <returns></returns>
-        [FunctionName(nameof(HttpStart))]
-        public async Task<IActionResult> HttpStart(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req,
+        [FunctionName(nameof(HttpGenerateAndArchiveReports))]
+        public async Task<IActionResult> HttpGenerateAndArchiveReports(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "post", "generateandarchivereports")] HttpRequest req,
             [DurableClient] IDurableOrchestrationClient client,
             ILogger log)
         {
-            // parse query parameter
-            string dataFile = req.GetQueryParameterDictionary()["data"];
+            using var sr = new StreamReader(req.Body);
+            var bodyAsString = await sr.ReadToEndAsync();
 
-            if (dataFile == null)
+            // parse body
+            if (string.IsNullOrWhiteSpace(bodyAsString))
             {
                 return new BadRequestObjectResult(
-                   "Please pass the datafile location on the query string");
+                   "Pass the data in the body of this request");
             }
 
-            log.LogInformation($"About to start orchestration for {dataFile}");
-
-            string fileData;
-            if (dataFile.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-            {
-                var resp = await _httpClient.GetAsync(dataFile);
-                resp.EnsureSuccessStatusCode();
-                fileData = await resp.Content.ReadAsStringAsync();
-            }
-            else
-            {
-                if (dataFile.Contains("..")) throw new InvalidOperationException("Path traversal not allowed");
-                fileData = File.ReadAllText(dataFile);
-            }
-
-            var students = JsonConvert.DeserializeObject<IEnumerable<Student>>(fileData);
+            var students = JsonConvert.DeserializeObject<IEnumerable<Student>>(bodyAsString);
             var orchestrationId = await client.StartNewAsync(nameof(ReportGeneratorOrchestrators.GenerateAndArchiveReports), null, students);
 
             var payload = client.CreateHttpManagementPayload(orchestrationId);
             return new OkObjectResult(payload);
+        }
+
+        /// <summary>
+        /// Http-trigger to generate a single report and write it to the response (return it). Report is not archived.
+        /// </summary>
+        /// <param name="req"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(HttpGenerateReport))]
+        public async Task<IActionResult> HttpGenerateReport(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "post", "generatereport")] HttpRequest req,
+            ILogger log)
+        {
+            using var sr = new StreamReader(req.Body);
+            var bodyAsString = await sr.ReadToEndAsync();
+
+            // parse query parameter
+            if (string.IsNullOrWhiteSpace(bodyAsString))
+            {
+                return new BadRequestObjectResult(
+                   "Pass the data in the body of this request");
+            }
+
+            var student = JsonConvert.DeserializeObject<Student>(bodyAsString);
+
+            log.LogInformation($"Generating report for {student.Name}");
+            var outputStream = GenerateDocument(student);
+            log.LogInformation($"Report for {student.Name}: {outputStream.Length} bytes");
+
+            return new FileStreamResult(outputStream, "application/pdf")
+            {
+                FileDownloadName = $"{student.Id}.pdf"
+            };
         }
 
         /// <summary>
@@ -189,7 +209,8 @@ namespace ReportGenerator
             log.LogInformation("Processing student {student}", student.Name);
 
             // Generate the report
-            var reportData = await GenerateReport(student, log);
+            using var outputStream = GenerateDocument(student);
+            var reportData = Convert.ToBase64String(outputStream.ToArray());
 
             // Archive the report
             _ = await ArchiveReport(new ArchiveReportCommand
@@ -218,18 +239,13 @@ namespace ReportGenerator
 
             try
             {
-
-                var studentAsString = JsonConvert.SerializeObject(student);
-                using var dataStream = new MemoryStream(Encoding.UTF8.GetBytes(studentAsString));
-
-                using var outputStream = new MemoryStream(60000); // Initial capacity to prevent many allocations
-                _docBuilder.Build(dataStream, DataFormat.Json, outputStream, null, DocumentFileFormat.PDF);
-                var result = Convert.ToBase64String(outputStream.ToArray());
+                using var outputStream = GenerateDocument(student);
+                var reportData = Convert.ToBase64String(outputStream.ToArray()); // TODO: Do we really need to return a base64-encoded string???
 
                 sw.Stop();
                 log.LogInformation($"Report generated for {student.Name} in {sw.ElapsedMilliseconds} ms");
 
-                return Task.FromResult(result);
+                return Task.FromResult(reportData);
             }
             catch (Exception e)
             {
@@ -272,6 +288,15 @@ namespace ReportGenerator
                 log.LogError(e, "Failed to archive report");
                 throw;
             }
+        }
+
+        private MemoryStream GenerateDocument(Student student)
+        {
+            var studentAsString = JsonConvert.SerializeObject(student);
+            using var dataStream = new MemoryStream(Encoding.UTF8.GetBytes(studentAsString));
+            var outputStream = new MemoryStream(60000); // Don't dispose
+            _docBuilder.Build(dataStream, DataFormat.Json, outputStream, null, DocumentFileFormat.PDF);
+            return outputStream;
         }
     }
 }

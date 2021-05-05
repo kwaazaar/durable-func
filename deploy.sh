@@ -37,6 +37,7 @@ az resource create \
 
 # step 7 - create the function app, connected to the storage account and app insights
 # Warning: consumption plan does not support PDF-generation. Required sandbox API's are only available for dedicated plans (B1 and up).
+# NB: AppServicePlan requires sku EP1 ((Elastic) Premium 1) or up to support auto-scaling. Consumption plan can not be used for Docati (see above). Manual scaling can also be used by providing the number of workers, eg: --number-of-workers 3 (3 is max for B1)
 az functionapp plan create \
   -g $RESOURCE_GROUP -n $FUNCTION_APP_PLAN --sku B1
 az functionapp create \
@@ -61,6 +62,14 @@ az functionapp config appsettings set -n $FUNCTION_APP_NAME -g $RESOURCE_GROUP \
 pushd ReportGenerator/
 func azure functionapp publish $FUNCTION_APP_NAME
 popd
+
+# To invoke the function (output is written to test.pdf):
+# curl -X POST https://$FUNCTION_APP_NAME.azurewebsites.net/api/httpgeneratereport -H "Content-Type: application/json" -d '{"Id":"A1239928-Z","Name":"Curly Kraut","Score":7.5}' -o test.pdf
+
+# To perform a load-test using ApacheBench:
+# Install ApacheBench (Linux/wsl): sudo apt-get install apache2-utils
+# # Generate a POST-body file: echo '{"Id":"A1239928-Z","Name":"Curly Kraut","Score":7.5}' > body.json
+# ab -c 10 -n 1000 -p body.json -T application/json https://$FUNCTION_APP_NAME.azurewebsites.net/api/httpgeneratereport
 
 # To remove all created resources, simply remove the resource group:
 # az group delete -n $RESOURCE_GROUP

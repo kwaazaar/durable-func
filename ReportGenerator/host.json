@@ -13,6 +13,10 @@
   "extensions": {
     "durableTask": {
       "hubName": "ReportGenerator"
+    },
+    "http": {
+      // More than 7 concurrent requests make responsetime over 1s on B1 plan for the containing template. Instead enable scaling on the AppServicePlan for higher throughput
+      //"maxConcurrentRequests": 7
     }
   }
 }
